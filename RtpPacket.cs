@@ -26,6 +26,11 @@ namespace RtspNmosRelay
         {
             get
             {
+                if(Payload==null)
+                {
+                    return HeaderSize;
+                }
+
                 return HeaderSize + Payload.Length;
             }
         }
@@ -33,6 +38,7 @@ namespace RtspNmosRelay
         public RtpPacket()
         {
             Version = 2;
+            HeaderSize = 12;
         }
 
         public RtpPacket(byte[] data)
@@ -46,8 +52,20 @@ namespace RtspNmosRelay
 
             BitWriter bw = new BitWriter(buffer);
 
-            //TODO: this is not correct, just starting to do the serialisation and need to go home... :-)
-            bw.Put_Bits((uint)Version, 4);
+            bw.Put_Bits((uint)Version, 2);
+            bw.Put_Bool(Padding);
+            bw.Put_Bool(Extension);
+            bw.Put_Bits((uint)CsrcCount, 1);
+            bw.Put_Bool(Marker);
+            bw.Put_Bits((uint)PayloadType, 7);
+            bw.Put_Bits(SequenceNumber, 16);
+            bw.Put_Bits(Timestamp, 32);
+            bw.Put_Bits(Ssrc, 32);
+            bw.BitPos += CsrcCount * 32;
+
+            //todo: support bit serialising RTP extensions (at the moment, ignoring - very short term)
+
+            //Buffer.BlockCopy(Payload, 0, buffer, bw.BitPos, Payload.Length);
 
             return buffer;
         }
@@ -65,7 +83,7 @@ namespace RtspNmosRelay
             Timestamp = (uint)((data[4] << 24) + (data[5] << 16) + (data[6] << 8) + data[7]);
             Ssrc = (uint)((data[8] << 24) + (data[9] << 16) + (data[10] << 8) + data[11]);
 
-            HeaderSize = 12 + (32 * CsrcCount);
+            HeaderSize = 12 + ((32 * CsrcCount)/8);
 
             //TODO: Actually find some stream with EH, and then double check the maths is all good and not off-by-one or anything
             if (Extension)

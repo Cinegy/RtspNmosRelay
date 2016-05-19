@@ -66,7 +66,7 @@ namespace RtspNmosRelay
         static void Main(string[] args)
         {
             Console.SetWindowSize(120, 40);
-
+            
             _options = new Options();
             
             if (Parser.Default.ParseArguments(args, _options))
@@ -640,6 +640,10 @@ namespace RtspNmosRelay
                 rtpPacket.Ssrc = 123456;
                 rtpPacket.PayloadType = 96;
                 rtpPacket.Timestamp = timestamp;
+
+                var serial = rtpPacket.GetPacket();
+
+                var testRtpPacket = new RtpPacket(serial);
 
                 //todo: look up again what the size should be to avoid fragments, and take into account extension headers - but today, just be inefficient
                 if (remainingData > 1400)
