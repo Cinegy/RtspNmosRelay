@@ -32,28 +32,31 @@ namespace RtspNmosRelay
 
             int bits_left = 8 - m_bitpos;
 
-            if(n < bits_left)
+            if (n < bits_left)
             {
-              val <<= (bits_left - n);
-              m_buffer[m_bytepos] |= (byte)val;
-              m_bitpos += n;
-              return;
+                val <<= (bits_left - n);
+                m_buffer[m_bytepos] |= (byte)val;
+                m_bitpos += n;
+                return;
             }
 
             Int64 bigval = ((Int64)(m_buffer[m_bytepos]) << (n - bits_left)) | val;
-            
+
             int nn = n + m_bitpos;
-            
-            while(nn >= 8)
+
+            while (nn >= 8)
             {
-              Write_Byte((byte)(bigval>>(nn-8)));
-              nn -= 8;
+                Write_Byte((byte)(bigval >> (nn - 8)));
+                nn -= 8;
             }
 
             m_bitpos += n;
             m_bitpos &= 7;
 
-            m_buffer[m_bytepos] = (byte)(bigval << (8-m_bitpos));
+            if (m_bytepos < m_buffer.Length)
+            {
+                m_buffer[m_bytepos] = (byte)(bigval << (8 - m_bitpos));
+            }
         }
 
         //----------------------------------------------------------------
