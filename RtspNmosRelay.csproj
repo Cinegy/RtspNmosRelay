@@ -108,8 +108,8 @@
   </Target>
   <Import Project="packages\Cinecoder.3.27.20.8651\build\Cinecoder.targets" Condition="Exists('packages\Cinecoder.3.27.20.8651\build\Cinecoder.targets')" />
   <PropertyGroup>
-    <PreBuildEvent>mkdir $(ProjectDir)Costura64
-copy $(TargetDir)cinecoder.dll $(ProjectDir)\Costura64</PreBuildEvent>
+    <PreBuildEvent>
+    </PreBuildEvent>
   </PropertyGroup>
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.
