@@ -55,7 +55,7 @@ namespace RtspNmosRelay
             bw.Put_Bits((uint)Version, 2);
             bw.Put_Bool(Padding);
             bw.Put_Bool(Extension);
-            bw.Put_Bits((uint)CsrcCount, 1);
+            bw.Put_Bits((uint)CsrcCount, 4);
             bw.Put_Bool(Marker);
             bw.Put_Bits((uint)PayloadType, 7);
             bw.Put_Bits(SequenceNumber, 16);
@@ -64,8 +64,10 @@ namespace RtspNmosRelay
             bw.BitPos += CsrcCount * 32;
 
             //todo: support bit serialising RTP extensions (at the moment, ignoring - very short term)
-
-            //Buffer.BlockCopy(Payload, 0, buffer, bw.BitPos, Payload.Length);
+            if (Payload != null && (PacketSize > (bw.BitPos / 8)))
+            {
+                Buffer.BlockCopy(Payload, 0, buffer, (bw.BitPos / 8), Payload.Length);
+            }
 
             return buffer;
         }

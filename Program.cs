@@ -45,12 +45,13 @@ namespace RtspNmosRelay
             AuthenticationError = 401,
             UnknownError = 2000
         }
+        private const int _targetRtpPayloadSize = 1400;
 
         private static bool _receiving;
 
         private static Options _options;
         private static UdpClient _outputClient;
-        
+
         private static StreamWriter _logFileStreamWriter;
         private static BinaryWriter _elemFileBinaryWriter;
         private static BinaryWriter _rtpFileBinaryWriter;
@@ -60,15 +61,16 @@ namespace RtspNmosRelay
         private static byte[] _ppsData;
 
         private static ushort _lastRtpSequenceNumber;
-        
+
+
         private static readonly RtpReorderBuffer RtpInputReorderBuffer = new RtpReorderBuffer();
-        
+
         static void Main(string[] args)
         {
             Console.SetWindowSize(120, 40);
-            
+
             _options = new Options();
-            
+
             if (Parser.Default.ParseArguments(args, _options))
             {
                 PrintToConsole("Cinegy RTSP to NMOS Multicast Relay");
@@ -82,8 +84,8 @@ namespace RtspNmosRelay
                 _outputClient = PrepareOutputClient(_options.MulticastAddress, _options.MulticastGroup);
 
                 var rtpPort = StartListeningToNetwork();
-                
-                SendRtspSetup(new Uri( _options.RtspUrl), rtpPort);
+
+                SendRtspSetup(new Uri(_options.RtspUrl), rtpPort);
 
                 Console.WriteLine("\nHit q to quit");
 
@@ -110,7 +112,7 @@ namespace RtspNmosRelay
                 Console.ReadLine();
             }
         }
-        
+
         private static void SendRtspSetup(Uri rtspUrl, int rtpPort)
         {
             //this method is just a mess - it was left 'simple' but brittle because this made intial debugging clearer.
@@ -127,9 +129,9 @@ namespace RtspNmosRelay
             rtspControlClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             rtspControlClient.ExclusiveAddressUse = false;
             rtspControlClient.Client.ReceiveBufferSize = 1024 * 256;
-            rtspControlClient.Connect(rtspUrl.Host,554);
+            rtspControlClient.Connect(rtspUrl.Host, 554);
             var strippedUri = rtspUrl.ToString(); //= RtspUrl.Scheme + "://" + RtspUrl.Authority + RtspUrl.AbsolutePath;
-           
+
             try
             {
                 var auth = Empty;
@@ -183,7 +185,7 @@ namespace RtspNmosRelay
 
                 _sdp = Encoding.ASCII.GetString(buf, 0, recvSize);
 
-                
+
                 if (_sdp.Contains("401"))
                 {
                     auth = GenerateAuthHeader(_sdp, new Uri(strippedUri));
@@ -221,7 +223,7 @@ namespace RtspNmosRelay
                 var clientPort = $"{rtpPort}-{rtpPort + 1}";
 
                 //TODO: this should be calculated from SDP and set - not just hardcoded to 0, or overridden by argument :-)
-                var trackId = 0; 
+                var trackId = 0;
 
                 if (_options.OverrideTrackSelection > -1)
                 {
@@ -337,13 +339,13 @@ namespace RtspNmosRelay
                     nonce = value.Trim('"');
                 }
             }
-          
+
             var digestHash = GenerateDigestHash(rtspUri, username, realm, password, "OPTIONS", nonce);
 
             return $"Authorization: Digest username=\"{username}\",realm=\"{realm}\",nonce=\"{nonce}\",uri=\"{rtspUri}\",response=\"{digestHash}\"\r\n";
 
         }
-        
+
         private static UdpClient PrepareOutputClient(string multicastAddress, int multicastGroup)
         {
             var outputIp = _options.OutputAdapterAddress != null ? IPAddress.Parse(_options.OutputAdapterAddress) : IPAddress.Any;
@@ -376,7 +378,7 @@ namespace RtspNmosRelay
             client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             client.Client.ReceiveBufferSize = 1024 * 256;
             localEp.Address = inputIp;
-            
+
             var ts = new ThreadStart(delegate
             {
                 ReceivingNetworkWorkerThread(client, localEp);
@@ -393,14 +395,13 @@ namespace RtspNmosRelay
         {
             //todo: recheck the RTP specs again, so see what the rules are about starting packet numbers, randomization, etc.
             _lastRtpSequenceNumber = 3000;
-            
+
         }
 
         private static void ReceivingNetworkWorkerThread(UdpClient client, IPEndPoint localEp)
         {
             var packetsStarted = false;
             var startWriting = false;
-            byte[] frameData = null;
 
             while (_receiving)
             {
@@ -417,163 +418,59 @@ namespace RtspNmosRelay
                 try
                 {
                     var inboundPacket = new RtpPacket(data);
-                    if(inboundPacket.PayloadType != 96) continue;
+                    if (inboundPacket.PayloadType != 96) continue;
 
                     RtpInputReorderBuffer.PushNewRtpPacket(new RtpPacket(data));
 
                     var prevRtpSeqNum = RtpInputReorderBuffer.LastReturnedRtpSequenceNumber;
                     var bufferedPacket = RtpInputReorderBuffer.GetNextRtpPacket();
 
-                    if (bufferedPacket == null)
+
+                    if ((bufferedPacket != null) && !startWriting && prevRtpSeqNum == 0)
+                        prevRtpSeqNum = (ushort)(bufferedPacket.SequenceNumber - 1);
+
+                    if (RtpReorderBuffer.GetSequenceNumberDifference(prevRtpSeqNum, bufferedPacket.SequenceNumber) != 1)
                     {
-                        frameData = null;
+                        PrintToConsole(DateTime.Now + ": RTP debuffer had sequence skip");
+                        startWriting = false;
                     }
-                    else
+
+                    if (bufferedPacket.Payload[1] == 0x85) //this byte indicates start of I frame
                     {
-                        if (!startWriting & prevRtpSeqNum == 0)
-                            prevRtpSeqNum = (ushort)(bufferedPacket.SequenceNumber - 1);
-                                                    
-                        if (RtpReorderBuffer.GetSequenceNumberDifference(prevRtpSeqNum,bufferedPacket.SequenceNumber)!=1) 
-                        {
-                            PrintToConsole(DateTime.Now + ": RTP debuffer had sequence skip");
-                            frameData = null;
-                            startWriting = false;
-                        }
+                        startWriting = true;
+                    }
 
-                        if (bufferedPacket.Payload[1] == 0x85) //this byte indicates start of I frame
-                        {
-                            startWriting = true;
-                        }
+                    if (bufferedPacket.Padding)
+                    {
+                        PrintToConsole("RTP Packet has padding... this needs to be removed - not yet implemented!!");
+                    }
 
-                        if (bufferedPacket.Padding)
+                    if (startWriting)
+                    {
+                        if ((bufferedPacket.Payload[0] & 0x1C) == 0x1c)
                         {
-                            PrintToConsole("RTP Packet has padding... this needs to be removed - not yet implemented!!");
-                        }
-
-                        if (startWriting)
-                        {
-                            if ((bufferedPacket.Payload[0] & 0x1C) == 0x1c)
+                            switch (bufferedPacket.Payload[1])
                             {
-                                switch (bufferedPacket.Payload[1])
-                                {
-                                    case 0x85: //start of new I frame - should definately insert NMOS payload packet for in-stream signaling here
-                                        PrintToConsole(
-                                            $"I-frame start - SeqNum: {bufferedPacket.SequenceNumber}, LastTS: {bufferedPacket.Timestamp}",
-                                            true);
-
-                                        //sps
-                                        frameData = AddToArray(frameData, new byte[] {0x0, 0x0, 0x0, 0x01});
-                                        frameData = AddToArray(frameData, _spsData);
-                                        //pps
-                                        frameData = AddToArray(frameData, new byte[] {0x0, 0x0, 0x0, 0x01});
-                                        frameData = AddToArray(frameData, _ppsData);
-                                        //New IDR NAL
-                                        frameData = AddToArray(frameData, new byte[] {0x0, 0x0, 0x0, 0x01});
-                                        frameData = AddToArray(frameData, 0x45);
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload, 2);
-
-                                        break;
-                                    case 0x81: //start of P / B frame
-                                        frameData = AddToArray(frameData, new byte[] {0x0, 0x0, 0x0, 0x01});
-                                        frameData = AddToArray(frameData, 0x41);
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload, 2);
-
-                                        break;
-                                    case 0x05: //body of I frame
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload, 2);
-                                        break;
-                                    case 0x01: //body of P / B frame
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload, 2);
-                                        break;
-                                    case 0x41: //end of P / B frame
-
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload, 2);
-
-                                        OutputData(frameData, bufferedPacket.Timestamp);
-
-                                        _elemFileBinaryWriter?.Write(frameData);
-
-                                        frameData = null;
-
-                                        break;
-                                    case 0x45: //end of I frame
-                                        
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload, 2);
-
-                                        OutputData(frameData, bufferedPacket.Timestamp);
-
-                                        _elemFileBinaryWriter?.Write(frameData);
-
-                                        frameData = null;
-
-                                        break;
-                                    default:
-                                        var printLen = 3;
-
-                                        if (printLen > bufferedPacket.Payload.Length)
-                                            printLen = bufferedPacket.Payload.Length;
-
-                                        var payloadString = BitConverter.ToString(bufferedPacket.Payload, 0, printLen);
-
-                                        PrintToConsole(
-                                            $"Unexpected indicator: 0x{bufferedPacket.Payload[1]:X}, Len: {bufferedPacket.Payload.Length}, First few bytes: {payloadString}",
-                                            true);
-
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload, 2);
-
-                                        break;
-                                }
-                            }
-                            else //not an FU-A packed payload
-                            {
-                                if ((bufferedPacket.Payload[0] & 0x09) == 0x09)
-                                {
-                                    if (bufferedPacket.Payload.Length < 1300)
-                                    {
-                                        //access unit delimiter in plain NALU payload
-                                        frameData = AddToArray(frameData, new byte[] {0x0, 0x0, 0x0, 0x01, 0x09});
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload, 2);
-                                    }
-                                }
-                                else if ((bufferedPacket.Payload[0] & 0x07) == 0x07)
-                                {
-                                    //SPS
-                                }
-                                else if ((bufferedPacket.Payload[0] & 0x08) == 0x08)
-                                {
-                                    //PPS
-                                }
-                                else if ((bufferedPacket.Payload[0] & 0x06) == 0x06)
-                                {
-                                    //SEI data
-                                    if (bufferedPacket.Payload.Length < 1380)
-                                    {
-                                        //access unit delimiter in plain NALU payload
-                                        frameData = AddToArray(frameData, new byte[] {0x0, 0x0, 0x0, 0x01});
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload);
-                                    }
-                                }
-                                else if ((bufferedPacket.Payload[0] & 0x01) == 0x01)
-                                {
-                                    //B or P frame (small payload case, total NAL in one packet
-                                    if (bufferedPacket.Payload.Length < 1380)
-                                    {
-                                        //access unit delimiter in plain NALU payload
-                                        frameData = null;
-
-                                        frameData = AddToArray(frameData, new byte[] { 0x0, 0x0, 0x0, 0x01 });
-                                        frameData = AddToArray(frameData, bufferedPacket.Payload);
-                                        
-                                        OutputData(frameData, bufferedPacket.Timestamp);
-
-                                        _elemFileBinaryWriter?.Write(frameData);
-
-                                        frameData = null;
-                                    }
-                                }
-                                else
-                                {
-                                    //unknown / never seen so far
+                                case 0x85: //start of new I frame
+                                    PrintToConsole(
+                                        $"I-frame start - SeqNum: {bufferedPacket.SequenceNumber}, LastTS: {bufferedPacket.Timestamp}",
+                                        true);
+                                    //should definately insert NMOS payload packet for in-stream signaling here, along with start of grain marker
+                                    break;
+                                case 0x81: //start of P / B frame
+                                           //should set grain extended header for start of grain
+                                    break;
+                                case 0x05: //body of I frame
+                                    break;
+                                case 0x01: //body of P / B frame
+                                    break;
+                                case 0x41: //end of P / B frame
+                                           //should set grain extended header with marker bit
+                                    break;
+                                case 0x45: //end of I frame
+                                           //should set grain extended header with marker bit
+                                    break;
+                                default:
                                     var printLen = 3;
 
                                     if (printLen > bufferedPacket.Payload.Length)
@@ -582,11 +479,64 @@ namespace RtspNmosRelay
                                     var payloadString = BitConverter.ToString(bufferedPacket.Payload, 0, printLen);
 
                                     PrintToConsole(
-                                        $"Non FU-A payload, Length: {bufferedPacket.Payload.Length}, First few bytes: {payloadString}",
+                                        $"Unexpected indicator: 0x{bufferedPacket.Payload[1]:X}, Len: {bufferedPacket.Payload.Length}, First few bytes: {payloadString}",
                                         true);
-                                }
+
+                                    break;
                             }
                         }
+                        else //not an FU-A packed payload
+                        {
+                            if ((bufferedPacket.Payload[0] & 0x09) == 0x09)
+                            {
+                                if (bufferedPacket.Payload.Length < 1300)
+                                {
+                                    //access unit delimiter in plain NALU payload
+                                }
+                            }
+                            else if ((bufferedPacket.Payload[0] & 0x07) == 0x07)
+                            {
+                                //SPS
+                            }
+                            else if ((bufferedPacket.Payload[0] & 0x08) == 0x08)
+                            {
+                                //PPS
+                            }
+                            else if ((bufferedPacket.Payload[0] & 0x06) == 0x06)
+                            {
+                                //SEI data
+                                if (bufferedPacket.Payload.Length < 1380)
+                                {
+                                    //access unit delimiter in plain NALU payload
+                                }
+                            }
+                            else if ((bufferedPacket.Payload[0] & 0x01) == 0x01)
+                            {
+                                //B or P frame (small payload case, total NAL in one packet)
+                                if (bufferedPacket.Payload.Length < 1380)
+                                {
+                                    //access unit delimiter in plain NALU payload
+                                    //should set grain extended header for start of grain and end of grain
+                                }
+                            }
+                            else
+                            {
+                                //unknown / never seen so far
+                                var printLen = 3;
+
+                                if (printLen > bufferedPacket.Payload.Length)
+                                    printLen = bufferedPacket.Payload.Length;
+
+                                var payloadString = BitConverter.ToString(bufferedPacket.Payload, 0, printLen);
+
+                                PrintToConsole(
+                                    $"Non FU-A payload, Length: {bufferedPacket.Payload.Length}, First few bytes: {payloadString}",
+                                    true);
+                            }
+                        }
+
+                        OutputData(bufferedPacket.Payload, bufferedPacket.Timestamp);
+                        _elemFileBinaryWriter?.Write(bufferedPacket.GetPacket());
                     }
                 }
                 catch (Exception ex)
@@ -595,37 +545,6 @@ namespace RtspNmosRelay
                 }
             }
         }
-        
-        private static byte[] AddToArray(byte[] arr, byte[] add, int from_byte = 0)
-        {
-            var arr_size = 0;
-            var add_size = add.Length - from_byte;
-            byte[] result;
-
-            if (arr == null)
-            {
-                result = new byte[add_size];
-            }
-            else
-            {
-                arr_size = arr.Length;
-                result = new byte[arr_size + add_size];
-                arr.CopyTo(result, 0);
-            }
-
-            Array.Copy(add, from_byte, result, arr_size, add_size);
-
-            return result;
-        }
-
-        private static byte[] AddToArray(byte[] arr, byte val)
-        {
-            var result = new byte[arr.Length + 1];
-            arr.CopyTo(result, 0);
-            result[arr.Length] = val;
-            
-            return result;
-        }
 
         private static void OutputData(byte[] data, uint timestamp)
         {
@@ -633,7 +552,7 @@ namespace RtspNmosRelay
             RtpPacket rtpPacket;
 
             var remainingData = data.Length;
-            while(remainingData>0)
+            while (remainingData > 0)
             {
                 rtpPacket = new RtpPacket();
                 rtpPacket.SequenceNumber = _lastRtpSequenceNumber++;
@@ -643,23 +562,19 @@ namespace RtspNmosRelay
 
                 var serial = rtpPacket.GetPacket();
 
+                //todo: look up again what the size should be to avoid fragments, and take into account extension headers - but today, just be inefficient
+                var bufferSize = remainingData;
+
+                if (bufferSize > _targetRtpPayloadSize) bufferSize = _targetRtpPayloadSize;
+
+                rtpPacket.Payload = new byte[bufferSize];
+                Buffer.BlockCopy(data, data.Length - remainingData, rtpPacket.Payload, 0, bufferSize);
+
+                serial = rtpPacket.GetPacket();
                 var testRtpPacket = new RtpPacket(serial);
 
-                //todo: look up again what the size should be to avoid fragments, and take into account extension headers - but today, just be inefficient
-                if (remainingData > 1400)
-                {
-                    rtpPacket.Payload = new byte[1400];
-                    Buffer.BlockCopy(data, data.Length - remainingData, rtpPacket.Payload, data.Length - remainingData, 1400);
-                    _outputClient.Send(rtpPacket.GetPacket(), rtpPacket.PacketSize);
-                    remainingData -= 1400;
-                }
-                else
-                {
-                    rtpPacket.Payload = new byte[data.Length];
-                    remainingData = 0;
-                    Buffer.BlockCopy(data, 0, rtpPacket.Payload, 0, data.Length);
-                    _outputClient.Send(rtpPacket.GetPacket(), rtpPacket.PacketSize);
-                }
+                _outputClient.Send(rtpPacket.GetPacket(), rtpPacket.PacketSize);
+                remainingData -= bufferSize;
             }
 
         }
@@ -711,16 +626,16 @@ namespace RtspNmosRelay
         private static string GenerateDigestHash(Uri location, string user, string realm, string pass, string method, string nonce)
         {
             var md5Hash = MD5.Create();
-            
+
             var uriPart = location != null && location.IsAbsoluteUri ? location.AbsoluteUri : new string('\\', 1);
-            
+
             var a1Hash = md5Hash.ComputeHash(Encoding.UTF8.GetBytes($"{user}:{realm}:{pass}"));
             var a2Hash = md5Hash.ComputeHash(Encoding.UTF8.GetBytes($"{method}:{uriPart}"));
             var a1NonceA2String = Format(System.Globalization.CultureInfo.InvariantCulture, "{0}:{1}:{2}",
                 BitConverter.ToString(a1Hash).Replace("-", Empty).ToLowerInvariant(), nonce,
                 BitConverter.ToString(a2Hash).Replace("-", Empty).ToLowerInvariant());
 
-            var a1NonceA2Hash= md5Hash.ComputeHash(Encoding.UTF8.GetBytes(a1NonceA2String));
+            var a1NonceA2Hash = md5Hash.ComputeHash(Encoding.UTF8.GetBytes(a1NonceA2String));
 
             var a1NonceA2HexHash = BitConverter.ToString(a1NonceA2Hash).Replace("-", "").ToLowerInvariant();
 

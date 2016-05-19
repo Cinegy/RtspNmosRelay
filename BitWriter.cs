@@ -53,7 +53,7 @@ namespace RtspNmosRelay
             m_bitpos += n;
             m_bitpos &= 7;
 
-            if (m_bytepos < m_buffer.Length)
+            if (nn != 0)
             {
                 m_buffer[m_bytepos] = (byte)(bigval << (8 - m_bitpos));
             }
